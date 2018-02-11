@@ -1,0 +1,146 @@
+---
+title: "Adult OA Experiment Water Chem"
+output: md_document
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(reshape2)
+library(readr) #combine .csv files
+library(lubridate)
+```
+Reading in daa from avtech system, which measured the Durafets in the Header and Experiment tanks (as well as a lot of other irrelevant sensors). Filtering out only the columns for Header and Control Durafets and changing their names. 
+NOTE: I think Control and Treatment were switched in the actual experiment relative to their labeling in the avtech system, so I have switched them here. Will double check.
+```{r}
+avtech <- read.csv("../Data/WaterChem/Scallop-OA-Project-master/Data/avtech/avtech_20160926-20161125.csv", header = TRUE)
+colnames(avtech)[grep("Temp",colnames(avtech), value = FALSE)]
+avtech <- select(avtech, Date...Time, pH.Header.Cont....Custom.Value, pH.Header.Treat...Custom.Value, pH.Exp.Cont....Custom.Value, pH.Exp.Treat....Custom.Value)
+colnames(avtech) <- c("Date","pH.Header.Treatment","pH.Header.Control","pH.Exp.Treatment","pH.Exp.Control")
+```
+Graphing avtech data, both raw and filtering out pH < 6.5:
+```{r}
+melted <- melt(avtech, id="Date")
+melted$Date <- mdy_hms(melted$Date)
+melted.filt <- filter(melted, value > 6.5)
+ggplot(melted.filt,aes(x=Date, y=value, colour = variable)) + geom_line() + xlab("Date") +ylab("Durafet pH") + ggtitle("pH values, filtered pH < 6.5") +scale_x_datetime(date_breaks = "1 week",date_labels = "%m-%d")
+```
+```{r}
+ggplot(melted,aes(x=Date, y=value, colour = variable)) + geom_line() + xlab("Date") +ylab("Durafet pH") + ggtitle("pH values, unfiltered") +scale_x_datetime(date_breaks = "1 week",date_labels = "%m-%d",)
+```
+Merge multiple .csv files into 1 master file and save
+```{r}
+csv.path <- ("/home/ksilliman/Projects/OA_Ostrea/Data/WaterChem/Scallop-OA-Project-master/Data/SW.chem.dps")
+SW.ag <- list.files(path = csv.path, full.names = TRUE) %>% 
+  lapply(read_csv) %>%
+  bind_rows
+SW.ag
+write.csv(SW.ag,file = "/home/ksilliman/Projects/OA_Ostrea/Data/WaterChem/Scallop-OA-Project-master/Data/SW.chem.ag.csv")
+```
+
+The following code is adapted from [Hollie Putnam's OA Geoduck experiment](https://github.com/hputnam/project_larval_geoduck_OA):
+```{r}
+#Read in required libraries
+library(seacarb) #seawater carbonate chemistry
+#library(reshape2) #reshape data
+library(plotrix) #functions in tapply
+library(ggplot2) #plotting library
+#library(gridExtra) #provides plotting grid layouts
+
+#Required Data files
+
+#####SEAWATER CHEMISTRY ANALYSIS FOR DISCRETE MEASUREMENTS#####
+
+##### pH Tris Calibration Curves #####
+#For conversion equations for pH from mV to total scale using tris standard
+
+path <-("/home/ksilliman/Projects/OA_Ostrea/Data/WaterChem/Scallop-OA-Project-master/Data/TRIScalibs/")
+
+#list all the file names in the folder to get only get the csv files
+file.names<-list.files(path = path, pattern = "csv$")
+
+pH.cals <- data.frame(matrix(NA, nrow=length(file.names), ncol=4, dimnames=list(file.names,c("Calib.Date", "Intercept", "Slope","R2")))) #generate a 3 column dataframe with specific column names
+
+for(i in 1:length(file.names)) { # for every file in list start at the first and run this following function
+  Calib.Data <-read.table(file.path(path,file.names[i]), header=TRUE, sep=",", na.string="NA", as.is=TRUE) #reads in the data files
+  model <-lm(mVTris ~ TTris, data=Calib.Data) #runs a linear regression of mV as a function of temperature
+  coe <- coef(model) #extracts the coeffecients
+  R <- summary(model)$r.squared #extracts the R2
+  pH.cals[i,2:3] <- coe #inserts coef in the dataframe
+  pH.cals[i,4] <- R #inserts R2 in the dataframe
+  pH.cals[i,1] <- substr(file.names[i],1,8) #stores the file name in the Date column
+}
+
+# read in temperature and salinity
+SW.chem <- read.csv("../Data/WaterChem/Scallop-OA-Project-master/Data/SW.chem.ag.csv", header=TRUE, sep=",", na.strings="NA") #load data with a header, separated by commas, with NA as NA
+
+#merge with Seawater chemistry file
+SW.chem <- merge(pH.cals, SW.chem, by="Calib.Date")
+
+#constants for use in pH calculation 
+R <- 8.31447215 #gas constant in J mol-1 K-1 
+F <-96485.339924 #Faraday constant in coulombs mol-1
+
+mvTris <- SW.chem$Temperature*SW.chem$Slope+SW.chem$Intercept #calculate the mV of the tris standard using the temperature mv relationships in the measured standard curves 
+STris<-27.5 #salinity of the Tris
+phTris<- (11911.08-18.2499*STris-0.039336*STris^2)*(1/(SW.chem$Temperature+273.15))-366.27059+ 0.53993607*STris+0.00016329*STris^2+(64.52243-0.084041*STris)*log(SW.chem$Temperature+273.15)-0.11149858*(SW.chem$Temperature+273.15) #calculate the pH of the tris (Dickson A. G., Sabine C. L. and Christian J. R., SOP 6a)
+SW.chem$pH.Total<-phTris+(mvTris/1000-SW.chem$pH.MV/1000)/(R*(SW.chem$Temperature+273.15)*log(10)/F) #calculate the pH on the total scale (Dickson A. G., Sabine C. L. and Christian J. R., SOP 6a)
+colnames(SW.chem)
+```
+Graphing Total pH:
+```{r}
+SW.chem$Measure.Date <- ymd(SW.chem$Measure.Date)
+ggplot(SW.chem,aes(x=Measure.Date, y=pH.Total, colour = Tank)) + geom_point() + xlab("Date") +ylab("Total pH (Benchtop)") + ggtitle("Total pH values") +scale_x_date(date_breaks = "1 week",date_labels = "%m-%d")
+```
+10-31-16 has unusual values:
+```{r}
+SW.chem$Measure.Date[which(SW.chem$pH.Total > 8)]
+```
+
+```{r}
+ggplot(SW.chem,aes(x=Measure.Date, y=Temperature, colour = Tank)) + geom_point() + xlab("Date") +ylab("Temperature (C)") + ggtitle("Temperature values") +scale_x_date(date_breaks = "1 week",date_labels = "%m-%d")
+
+```
+```{r}
+ggplot(SW.chem,aes(x=Measure.Date, y=Salinity, colour = Tank)) + geom_point() + xlab("Date") +ylab("Salinity (ppt)") + ggtitle("Salinity")
+```
+Salinity measurements are missing on 10/14/16 and 10/4/16:
+```{r}
+SW.chem$Measure.Date[which(is.na(SW.chem$Salinity))]
+```
+
+Calculations for other carbonate parameters. Requires TA values, which we currently don't have.
+```{r}
+# #### Seacarb Calculations #####
+# 
+# #Calculate CO2 parameters using seacarb
+# carb.output <- carb(flag=8, var1=SW.chem$pH.Total, var2=SW.chem$TA/1000000, S= SW.chem$Salinity, T=SW.chem$Temperature, P=0, Pt=0, Sit=0, pHscale="T", kf="pf", k1k2="l", ks="d") #calculate seawater chemistry parameters using seacarb
+# 
+# carb.output$ALK <- carb.output$ALK*1000000 #convert to µmol kg-1
+# carb.output$CO2 <- carb.output$CO2*1000000 #convert to µmol kg-1
+# carb.output$HCO3 <- carb.output$HCO3*1000000 #convert to µmol kg-1
+# carb.output$CO3 <- carb.output$CO3*1000000 #convert to µmol kg-1
+# carb.output$DIC <- carb.output$DIC*1000000 #convert to µmol kg-1
+# 
+# carb.output <- cbind(SW.chem$Measure.Date,  SW.chem$Tank,  SW.chem$Treatment, carb.output) #combine the sample information with the seacarb output
+# colnames(carb.output) <- c("Date",  "Tank",  "Treatment",	"flag",	"Salinity",	"Temperature",	"Pressure",	"pH",	"CO2",	"pCO2",	"fCO2",	"HCO3",	"CO3",	"DIC", "TA",	"Aragonite.Sat", 	"Calcite.Sat") #Rename columns to describe contents
+# carb.output <- subset(carb.output, select= c("Date",  "Tank",  "Treatment",	"Salinity",	"Temperature",		"pH",	"CO2",	"pCO2",	"HCO3",	"CO3",	"DIC", "TA",	"Aragonite.Sat"))
+# 
+# ##### Descriptive Statistics #####
+# #Calculate mean and se per Tank
+# tank.means <- aggregate(cbind(pCO2, pH, Temperature, Salinity, TA, DIC) ~ Tank, mean, data=carb.output, na.rm=TRUE)
+# tank.ses <- aggregate(cbind(pCO2, pH, Temperature, Salinity, TA, DIC) ~ Tank, std.error, data=carb.output, na.rm=TRUE)
+# 
+# #Calculate mean and se per Treatments
+# trt.means <- aggregate(cbind(pCO2, pH, Temperature, Salinity, TA, DIC) ~ Treatment, mean, data=carb.output, na.rm=TRUE)
+# trt.ses <- aggregate(cbind(pCO2, pH, Temperature, Salinity, TA, DIC) ~ Treatment, std.error, data=carb.output, na.rm=TRUE)
+# 
+# mean.carb.output <- cbind(trt.means, trt.ses[,2:7]) #create dataframe
+# colnames(mean.carb.output) <- c("Treatment", "pCO2", "pH", "Temperature", "Salinity", "TA","DIC", "pCO2.se", "pH.se", "Temperature.se", "Salinity.se", "TA.se", "DIC.se") #rename columns
+# write.table (mean.carb.output, file="/Users/hputnam/MyProjects/Geoduck_Epi/project_larval_geoduck_OA/RAnalysis/Output/Seawater_chemistry_table_Output_Trial2.csv", sep=",", row.names = FALSE) #save output
+
+```
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
